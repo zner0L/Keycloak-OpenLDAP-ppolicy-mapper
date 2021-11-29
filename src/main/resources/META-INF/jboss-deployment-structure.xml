@@ -12,6 +12,7 @@
             <module name="org.keycloak.keycloak-server-spi-private"/>
             <module name="org.keycloak.keycloak-common"/>
             <module name="org.keycloak.keycloak-services"/>
+            <module name="org.keycloak.keycloak-ldap-federation"/>
         </dependencies>
     </deployment>
 </jboss-deployment-structure>

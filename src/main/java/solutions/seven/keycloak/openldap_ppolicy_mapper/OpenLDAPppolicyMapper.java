@@ -14,15 +14,18 @@ import org.keycloak.storage.ldap.mappers.TxAwareLDAPUserModelDelegate;
 
 import javax.naming.AuthenticationException;
 
-import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
 public class OpenLDAPppolicyMapper extends AbstractLDAPStorageMapper {
 
     private static final Logger logger = Logger.getLogger(OpenLDAPppolicyMapper.class);
-    public static final String LDAP_PPOLICY_LOCK_TIME = "pwdLockoutDuration";
-    public static final String LDAP_TIMESTAMP_FORMAT = "yyyyMMddkk[mm[ss]][.S]X";
+    public static final String LDAP_PPOLICY_LOCK_TIME = "pwdAccountLockedTime";
+    public static final String LDAP_TIMESTAMP_FORMAT = "yyyyMMddkkmmss[.SSS]X";
+    // this particular timestamp signifies a ermant block by the admin and can only
+    // be removed by the admin
+    public static final String LDAP_LOCKOUT_TIMESTAMP = "000001010000Z";
     public static final String CONFIG_LDAP_LOCKOUT_DURATION = "ldap.ppolicy.lockout.duration";
 
     public OpenLDAPppolicyMapper(ComponentModel mapperModel, LDAPStorageProvider ldapProvider) {
@@ -31,15 +34,7 @@ public class OpenLDAPppolicyMapper extends AbstractLDAPStorageMapper {
 
     @Override
     public void beforeLDAPQuery(LDAPQuery query) {
-        query.addReturningLdapAttribute(LDAPConstants.PWD_LAST_SET);
-        query.addReturningLdapAttribute(LDAPConstants.USER_ACCOUNT_CONTROL);
-
-        // This needs to be read-only and can be set to writable just on demand
-        query.addReturningReadOnlyLdapAttribute(LDAPConstants.PWD_LAST_SET);
-
-        if (ldapProvider.getEditMode() != UserStorageProvider.EditMode.WRITABLE) {
-            query.addReturningReadOnlyLdapAttribute(LDAPConstants.USER_ACCOUNT_CONTROL);
-        }
+        query.addReturningLdapAttribute(LDAP_PPOLICY_LOCK_TIME);
     }
 
     @Override
@@ -60,14 +55,20 @@ public class OpenLDAPppolicyMapper extends AbstractLDAPStorageMapper {
     @Override
     public boolean onAuthenticationFailure(LDAPObject ldapUser, UserModel user, AuthenticationException ldapException,
             RealmModel realm) {
-        logger.debug(ldapException.getMessage());
+        long lockoutDuration = mapperModel.get(CONFIG_LDAP_LOCKOUT_DURATION, 0);
 
-        /*
-         * String exceptionMessage = ldapException.getMessage(); Matcher m =
-         * AUTH_EXCEPTION_REGEX.matcher(exceptionMessage); if (m.matches()) { String
-         * errorCode = m.group(1); return processAuthErrorCode(errorCode, user); } else
-         * { return false; }
-         */
+        if (ldapException.getMessage().equals("[LDAP: error code 49 - Invalid Credentials]")) {
+            // OpenLDAP doesn't tell us in the error message if the Account is locked or the
+            // username/password are wrong, so we have to check ourselves
+            if (isLDAPUserLocked(ldapUser, lockoutDuration)) {
+                user.setEnabled(false);
+                return true;
+            } else {
+                user.setEnabled(true);
+                return false;
+            }
+        }
+
         return false;
     }
 
@@ -83,60 +84,63 @@ public class OpenLDAPppolicyMapper extends AbstractLDAPStorageMapper {
         return false;
     }
 
+    public static boolean isLDAPUserLocked(LDAPObject ldapUser, long lockoutDuration) {
+        DateTimeFormatter ldapFormatter = DateTimeFormatter.ofPattern(LDAP_TIMESTAMP_FORMAT);
+        String lockTimestamp = ldapUser.getAttributeAsString(LDAP_PPOLICY_LOCK_TIME);
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("UTC"));
+
+        if (lockTimestamp != null) {
+            if (lockTimestamp.equals(LDAP_LOCKOUT_TIMESTAMP)) {
+                return true;
+            } else {
+                ZonedDateTime lockedTime = ZonedDateTime.parse(lockTimestamp, ldapFormatter);
+
+                if (lockoutDuration > 0) {
+                    ZonedDateTime unlockedTime = lockedTime.plusSeconds(lockoutDuration);
+                    // account is only locked within the lockout interval
+                    return lockedTime.isBefore(now) && unlockedTime.isAfter(now);
+                } else {
+                    // lockoutDuration of 0 means the lockout is permanent until removed by the
+                    // admin
+                    return lockedTime.isBefore(now);
+                }
+            }
+        }
+
+        return false;
+    }
+
     public class OpenLDAPUserModelDelegate extends TxAwareLDAPUserModelDelegate {
 
         private final LDAPObject ldapUser;
-        private DateTimeFormatter ldapFormatter;
 
         public OpenLDAPUserModelDelegate(UserModel delegate, LDAPObject ldapUser) {
             super(delegate, ldapProvider, ldapUser);
             this.ldapUser = ldapUser;
-            this.ldapFormatter = DateTimeFormatter.ofPattern(LDAP_TIMESTAMP_FORMAT);
         }
 
         @Override
         public boolean isEnabled() {
-            boolean kcEnabled = super.isEnabled();
-            LocalDateTime lockedTime = getPwdLockedTime();
             long lockoutDuration = mapperModel.get(CONFIG_LDAP_LOCKOUT_DURATION, 0);
-
-            if (lockedTime != null) {
-
-                if (lockoutDuration > 0) {
-                    LocalDateTime unlockedTime = lockedTime.minusSeconds(lockoutDuration);
-                    return kcEnabled && unlockedTime.isBefore(LocalDateTime.now(ZoneId.of("UTC")));
-                } else {
-                    return kcEnabled && lockedTime.isAfter(LocalDateTime.now(ZoneId.of("UTC")));
-                }
-            } else {
-                return kcEnabled;
-            }
+            return super.isEnabled() && !isLDAPUserLocked(ldapUser, lockoutDuration);
         }
 
         @Override
         public void setEnabled(boolean enabled) {
             super.setEnabled(enabled);
+            long lockoutDuration = mapperModel.get(CONFIG_LDAP_LOCKOUT_DURATION, 0);
 
-            if (ldapProvider.getEditMode() == UserStorageProvider.EditMode.WRITABLE) {
-                OpenLDAPppolicyMapper.logger.debugf("Propagating enabled=%s for user '%s' to OpenLDAP", enabled,
-                        ldapUser.getDn().toString());
+            if (!isLDAPUserLocked(ldapUser, lockoutDuration) != enabled) {
+                if (ldapProvider.getEditMode() == UserStorageProvider.EditMode.WRITABLE) {
 
-                if (enabled) {
-                    ldapUser.setSingleAttribute(LDAP_PPOLICY_LOCK_TIME, null);
-                } else {
-                    ldapUser.setSingleAttribute(LDAP_PPOLICY_LOCK_TIME, "000001010000Z");
+                    if (enabled) {
+                        ldapUser.setAttribute(LDAP_PPOLICY_LOCK_TIME, null);
+                    } else {
+                        ldapUser.setSingleAttribute(LDAP_PPOLICY_LOCK_TIME, LDAP_LOCKOUT_TIMESTAMP);
+                    }
+
+                    markUpdatedAttributeInTransaction(LDAPConstants.ENABLED);
                 }
-
-                markUpdatedAttributeInTransaction(LDAPConstants.ENABLED);
-            }
-        }
-
-        protected LocalDateTime getPwdLockedTime() {
-            String lockTimestamp = ldapUser.getAttributeAsString(LDAP_PPOLICY_LOCK_TIME);
-            if (lockTimestamp != null) {
-                return LocalDateTime.parse(lockTimestamp, this.ldapFormatter);
-            } else {
-                return null;
             }
 
         }

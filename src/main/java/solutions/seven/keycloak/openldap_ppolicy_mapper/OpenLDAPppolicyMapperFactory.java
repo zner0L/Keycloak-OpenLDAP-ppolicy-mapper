@@ -10,9 +10,6 @@ import org.keycloak.storage.ldap.mappers.AbstractLDAPStorageMapperFactory;
 
 import java.util.List;
 
-/**
- * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
- */
 public class OpenLDAPppolicyMapperFactory extends AbstractLDAPStorageMapperFactory {
 
     public static final String PROVIDER_ID = "openldap_ppolicy_mapper";
