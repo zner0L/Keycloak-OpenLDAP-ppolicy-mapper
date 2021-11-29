@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jboss-deployment-structure>
+    <deployment>
+        <module-alias name="deployment.openldap_ppolicy_mapper"/>
+        <dependencies>
+            <module name="javax.ws.rs.api"/>
+            <module name="org.jboss.resteasy.resteasy-jaxrs"/>
+            <module name="org.javassist"/>
+            <module name="org.hibernate"/>
+            <module name="org.keycloak.keycloak-core"/>
+            <module name="org.keycloak.keycloak-server-spi"/>
+            <module name="org.keycloak.keycloak-server-spi-private"/>
+            <module name="org.keycloak.keycloak-common"/>
+            <module name="org.keycloak.keycloak-services"/>
+        </dependencies>
+    </deployment>
+</jboss-deployment-structure>
