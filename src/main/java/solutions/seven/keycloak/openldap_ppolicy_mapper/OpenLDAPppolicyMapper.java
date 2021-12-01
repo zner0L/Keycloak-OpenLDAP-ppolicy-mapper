@@ -72,18 +72,6 @@ public class OpenLDAPppolicyMapper extends AbstractLDAPStorageMapper {
         return false;
     }
 
-    protected boolean processAuthErrorCode(String errorCode, UserModel user) {
-        if (errorCode.equals("533")) {
-            // User is disabled in MSAD. Set him to disabled in KC as well
-            if (user.isEnabled()) {
-                user.setEnabled(false);
-            }
-            return true;
-        }
-
-        return false;
-    }
-
     public static boolean isLDAPUserLocked(LDAPObject ldapUser, long lockoutDuration) {
         DateTimeFormatter ldapFormatter = DateTimeFormatter.ofPattern(LDAP_TIMESTAMP_FORMAT);
         String lockTimestamp = ldapUser.getAttributeAsString(LDAP_PPOLICY_LOCK_TIME);
